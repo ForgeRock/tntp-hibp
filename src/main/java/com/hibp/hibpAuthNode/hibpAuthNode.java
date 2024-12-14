@@ -121,8 +121,10 @@ public class hibpAuthNode extends AbstractDecisionNode {
         logger.error(loggerPrefix + hex);
         int breaches = haveIBeenPwnedPassword(hex);
         JsonValue newSharedState = context.sharedState.copy();
-        if (config.breaches() != null) newSharedState.put(config.breaches(), breaches);
-        return goTo(false).build();
+        if (breaches > config.threshold()) {
+            return goTo(false).build();
+        }
+        return goTo(true).build();
     }
 
     private int haveIBeenPwnedPassword(String hex) {
