@@ -27,6 +27,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.*;
 
 import javax.inject.Inject;
 
@@ -59,15 +60,15 @@ import java.net.HttpURLConnection;
 import java.net.MalformedURLException;
 import java.net.URL;
 import org.apache.commons.codec.binary.Hex;
+import org.forgerock.util.i18n.PreferredLocales;
 /**
  * A node that checks to see if zero-page login headers have specified username and whether that username is in a group
  * permitted to use zero-page login headers.
  */
-@Node.Metadata(outcomeProvider  = AbstractDecisionNode.OutcomeProvider.class,
+@Node.Metadata(outcomeProvider  = hibpAuthNode.OutcomeProvider.class,
                configClass      = hibpAuthNode.Config.class)
 public class hibpAuthNode extends AbstractDecisionNode {
 
-    private final Pattern DN_PATTERN = Pattern.compile("^[a-zA-Z0-9]=([^,]+),");
     private final Logger logger = LoggerFactory.getLogger(hibpAuthNode.class);
     private final Config config;
     private final Realm realm;
@@ -77,6 +78,12 @@ public class hibpAuthNode extends AbstractDecisionNode {
      * Configuration for the node.
      */
     public interface Config {
+
+        @Attribute(order = 100)
+        default String apiKey() { return "apiKey"; }
+
+        @Attribute(order = 200)
+        default String userAgent() { return "ForgeRock"; }
 
         @Attribute(order = 400)
         default int threshold() { return 0; }
@@ -102,29 +109,36 @@ public class hibpAuthNode extends AbstractDecisionNode {
 
     @Override
     public Action process(TreeContext context) {
-        NodeState nodeState = context.getStateFor(this);
-        String pass = nodeState.get("password").asString();
-        logger.error(loggerPrefix + pass);
-        if (pass == null) {
-
-            return goTo(true).build();
-        }
-        String hex = null;
         try {
-            MessageDigest sha1 = MessageDigest.getInstance("SHA-1");
-            sha1.update(pass.getBytes("UTF-8"));
-            hex = Hex.encodeHexString(sha1.digest());
-        } catch (Exception e) {
-            // Assume compromised state
-            return goTo(true).build();
+            NodeState nodeState = context.getStateFor(this);
+            String pass = nodeState.get("password").asString();
+            if (pass == null) {
+
+                return Action.goTo("Compromised").build();
+            }
+            String hex = null;
+            try {
+                MessageDigest sha1 = MessageDigest.getInstance("SHA-1");
+                sha1.update(pass.getBytes("UTF-8"));
+                hex = Hex.encodeHexString(sha1.digest());
+            } catch (Exception e) {
+                // Assume compromised state
+                return Action.goTo("Compromised").build();
+            }
+            int breaches = haveIBeenPwnedPassword(hex);
+            JsonValue newSharedState = context.sharedState.copy();
+            if (breaches > config.threshold()) {
+                return Action.goTo("Compromised").build();
+            }
+            return Action.goTo("Not Compromised").build();
+        } catch(Exception ex) { 
+            String stackTrace = org.apache.commons.lang.exception.ExceptionUtils.getStackTrace(ex);
+            logger.error(loggerPrefix + "Exception occurred: " + stackTrace);
+            context.getStateFor(this).putTransient(loggerPrefix + "Exception", new Date() + ": " + ex.getMessage());
+            context.getStateFor(this).putTransient(loggerPrefix + "StackTrace", new Date() + ": " + stackTrace);
+            return Action.goTo("Error").build();
+
         }
-        logger.error(loggerPrefix + hex);
-        int breaches = haveIBeenPwnedPassword(hex);
-        JsonValue newSharedState = context.sharedState.copy();
-        if (breaches > config.threshold()) {
-            return goTo(false).build();
-        }
-        return goTo(true).build();
     }
 
     private int haveIBeenPwnedPassword(String hex) {
@@ -136,6 +150,8 @@ public class hibpAuthNode extends AbstractDecisionNode {
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
             conn.setRequestProperty("Accept", "application/json");
+            conn.setRequestProperty("User-Agent", config.userAgent());
+            conn.setRequestProperty("hibp-api-key", config.apiKey());
             
             if (conn.getResponseCode() != 200) {
             }
@@ -144,7 +160,6 @@ public class hibpAuthNode extends AbstractDecisionNode {
             String output;
             while ((output = br.readLine()) != null) {
                 if (prefix.concat(output).startsWith(hex)) {
-                    logger.error(loggerPrefix + "found matching password" +output);
                     // Compromised password match
                     String[] parts;
                     parts = output.split(":");
@@ -161,9 +176,33 @@ public class hibpAuthNode extends AbstractDecisionNode {
             e.printStackTrace();
         }
 
-        // No matching password found
-        logger.error(loggerPrefix + response);
         return response;
+    }
+
+    public static final class OutcomeProvider implements org.forgerock.openam.auth.node.api.OutcomeProvider {
+        /**
+         * Outcomes Ids for this node.
+         */
+        
+         static final String SUCCESS_OUTCOME = "Compromised";
+    static final String ERROR_OUTCOME = "Error";
+    static final String FAILURE_OUTCOME = "Not Compromised";
+        private static final String BUNDLE = hibpAuthNode.class.getName();
+
+        @Override
+        public List<Outcome> getOutcomes(PreferredLocales locales, JsonValue nodeAttributes) {
+
+
+            List<Outcome> results = new ArrayList<>(
+                    Arrays.asList(
+                            new Outcome(SUCCESS_OUTCOME, SUCCESS_OUTCOME)
+                    )
+            );
+            results.add(new Outcome(FAILURE_OUTCOME, FAILURE_OUTCOME));
+            results.add(new Outcome(ERROR_OUTCOME, ERROR_OUTCOME));
+
+            return Collections.unmodifiableList(results);
+        }
     }
 
 }
