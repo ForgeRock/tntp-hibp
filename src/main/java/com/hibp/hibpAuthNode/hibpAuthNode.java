@@ -83,13 +83,10 @@ public class hibpAuthNode extends AbstractDecisionNode {
         default String apiKey() { return "apiKey"; }
 
         @Attribute(order = 200)
-        default String userAgent() { return "ForgeRock"; }
+        default String userAgent() { return ""; }
 
         @Attribute(order = 400)
-        default int threshold() { return 0; }
-
-        @Attribute(order = 500)
-        default String breaches() { return "breaches"; }    
+        default int threshold() { return 0; } 
         
     }
 
